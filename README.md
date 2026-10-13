@@ -18,8 +18,7 @@ AWS Enterprise Web Application Cloud Migration & High-Availability Architecture
 3. **安全边界扁平**：核心数据库与 Web 应用共用公网出入口，缺乏网络层与传输层的隔离防护。
 4. **监控与告警滞后**：依赖人工巡检，缺乏端到端指标联动与故障检测与告警能力。
 
-本项目参考 AWS Well-Architected Framework 中的可靠性、安全性与卓越运维等设计原则，实践搭建了跨可用区的 Web 计算层、负载均衡、网络访问控制、S3 对象存储访问和故障告警机制，并对架构的可用性、成本与安全性进行分析。
-
+本项目使用 AWS 搭建了一个简单的网站架构，主要实践了跨可用区部署 EC2、使用 ALB 分发请求、通过安全组限制访问，以及利用 IAM Role 访问 S3。最后通过停止 Nginx 服务，观察 ALB 的健康检查和流量切换情况。
 ---
 
 ## 二、 架构拓扑设计 (Architecture Topology)
@@ -93,7 +92,7 @@ graph TD
 
 ---
 
-## 五、 故障注入与容灾测试报告 (Chaos Engineering & Results)
+## 五、 故障注入与负载均衡验证（Fault Injection & Load Balancing）
 
 ### 实验 1：公网攻击面收敛验证 (Perimeter Security Verification)
 - **测试方法**：
@@ -146,7 +145,7 @@ graph TD
 
 ### 1. 数据库可用性与成本权衡
 
-本项目使用 RDS Single-AZ 部署 MySQL，主要考虑到个人实验环境的成本限制。Web 层通过 ALB 和跨可用区部署的 EC2 实例提高服务可用性，但数据库层仍存在单点故障风险，因此当前架构尚未实现端到端的跨可用区高可用。
+为了控制实验费用，我使用了 Single-AZ 的 RDS。这样可以验证 EC2 与数据库之间的连接，但数据库所在可用区发生故障时，当前架构没有自动切换到备用数据库的能力。
 
 后续可以根据业务的可用性要求和预算，将 RDS 调整为 Multi-AZ，并进一步验证数据库故障切换行为。
 
