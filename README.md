@@ -16,7 +16,7 @@ AWS Enterprise Web Application Cloud Migration & High-Availability Architecture
 1. **单点故障（SPOF）**：Web 容器（Nginx）与数据库单机混部，缺乏高可用冗余，单点宕机即导致全站瘫痪。
 2. **缺乏弹性扩展能力**：无状态应用与有状态持久化数据强绑定，无法应对流量突增时的横向伸缩。
 3. **安全边界扁平**：核心数据库与 Web 应用共用公网出入口，缺乏网络层与传输层的隔离防护。
-4. **监控与告警滞后**：依赖人工巡检，缺乏端到端指标联动与秒级自动化故障感知机制。
+4. **监控与告警滞后**：依赖人工巡检，缺乏端到端指标联动与故障检测与告警能力。
 
 本项目参考 AWS Well-Architected Framework 中的可靠性、安全性与卓越运维等设计原则，实践搭建了跨可用区的 Web 计算层、负载均衡、网络访问控制、S3 对象存储访问和故障告警机制，并对架构的可用性、成本与安全性进行分析。
 
@@ -66,7 +66,6 @@ graph TD
 | **enterprise-web-sg** | EC2 Web 集群 | Inbound | TCP 80 | **`enterprise-alb-sg` (SG ID)** |通过引用 ALB 安全组限制 HTTP 入站来源，避免客户端绕过负载均衡器直接访问 Web 服务端口 |
 | | | Inbound | TCP 22 | 3.112.23.0/29 (EC2 Instance Connect 服务来源网段，ap-northeast-1) | 允许 EC2 Instance Connect 服务通过 SSH 连接实例。该规则用于限制管理访问来源，降低直接向公网开放 SSH 的风险；实际使用时应核对 AWS 当前的服务前缀列表。 |
 | **enterprise-rds-sg** | RDS MySQL 实例 | Inbound | TCP 3306 | **`enterprise-web-sg` (SG ID)** | 仅允许关联 Web 安全组的应用实例通过必要的 MySQL 端口访问数据库。 |
-| | | Inbound | All |  | 通过私有子网和安全组限制数据库的公网可达性及网络访问范围。 |
 **数据库网络隔离说明：** RDS 配置为不可公开访问，并部署在私有子网中；安全组仅允许来自 Web 安全组的必要 MySQL 流量。该设计限制了数据库的网络访问范围，但不代表数据库具备 Multi-AZ 高可用能力。
 
 ---
@@ -75,13 +74,13 @@ graph TD
 
 ### 1. 计算层初始化与实例元数据 (Compute Initialization & Metadata)
 - 实例均通过编写预置的 Cloud-init **User Data** 脚本进行引导部署，避免手工登入配置。
-- 在引导阶段集成 **IMDSv2 (Instance Metadata Service v2)**，动态探测机器私有 IP 与可用区信息生成专属响应页，为后续构建 Auto Scaling Group（ASG）奠定无状态计算标准。
+- 在引导阶段集成 **IMDSv2 (Instance Metadata Service v2)**，动态探测机器私有 IP 与可用区信息生成专属响应页，为后续引入 ASG 提供基础。
 
 ### 2. 托管数据层与动静分离 (Data Tier & Storage)
 - **RDS for MySQL 部署（成本优先型设计）**：
   - 实例标识符：`enterprise-db`（MySQL 8.4，实例规格 `db.t3.micro`）
   - 架构模式：**单可用区部署（Single-AZ）**。在当前的阶段性验证中，此设计优先满足成本安全；核心生产建议开启 Multi-AZ 同步备机。
-  - 专用 DB 子网组：`enterprise-db-subnet-group`（专用 DB 子网组：`enterprise-db-subnet-group`，覆盖两个可用区，为后续调整为 Multi-AZ 部署提供子网基础。）。
+  - （专用 DB 子网组：`enterprise-db-subnet-group`，覆盖两个可用区，为后续调整为 Multi-AZ 部署提供子网基础）。
   - 安全隔离：开启 KMS 静态加密，彻底关闭公网访问权限（`Publicly Accessible: NO`）。
   - **内网联调与持久化测试：**
 ![RDS 跨子网内网查询验证](02-rds-mysql-connection.png)
@@ -94,7 +93,7 @@ graph TD
 
 ---
 
-## 五、 混沌工程验证与容灾测试报告 (Chaos Engineering & Results)
+## 五、 故障注入与容灾测试报告 (Chaos Engineering & Results)
 
 ### 实验 1：公网攻击面收敛验证 (Perimeter Security Verification)
 - **测试方法**：
@@ -119,10 +118,10 @@ graph TD
 
 - **观测指标与流量故障转移结果**：
 
-  - **ALB 目标组判定**：记录目标健康状态的变化及实际观察到的判定时间。
-  - **终端访问表现**：在本次测试中，ALB 将被判定为不健康的目标摘除，并将后续请求转发至其他健康目标。该结果用于验证 Web 层的故障目标摘除与流量故障转移，不代表所有请求均无中断。
-  - **CloudWatch 告警**：记录 `UnHealthyHostCount` 指标和告警状态的实际变化。
-  - **SNS 通知**：记录实际收到的告警邮件及对应时间；60s以内
+  - **ALB 目标组判定**：停止 Nginx 进程后，ALB 目标组健康检查探测失败，在约 30 秒内将该目标标记为 Unhealthy (Health checks failed)，并停止向其分配新请求
+  - **终端访问表现**：在本次测试中，ALB 将被判定为不健康的目标摘除，并将后续请求转发至存活的健康目标（Node 2）。该结果用于验证 Web 层的故障目标摘除与流量切换，不代表所有场景均无中断。
+  - **CloudWatch 告警**：当 `UnHealthyHostCount` 指标达到告警阈值 1 时，CloudWatch 告警状态由 `OK` 转为 `In alarm`（前提是实际监控记录中观察到了该状态变化）。
+  - **SNS 通知**：配置 CloudWatch 告警与 SNS 邮件通知的联动，并根据实际收到的邮件验证告警通知流程。通知延迟以实际测试记录为准。
 
   **故障感知与监控指标触发：**
 
@@ -134,7 +133,7 @@ graph TD
 
 ### 1. 成本控制
 
-- **AWS Budgets 告警**：预算监控： 配置 AWS Budgets 预算告警，以 1 美元作为预算阈值，用于监控项目相关费用并在达到告警条件时接收通知。
+- **AWS Budgets 告警**： 配置 AWS Budgets 预算告警，以 1 美元作为预算阈值，用于监控项目相关费用并在达到告警条件时接收通知。
 - **网络架构降本**：实验环境将 EC2 部署在公有子网，避免使用 NAT Gateway 产生的额外费用。NAT Gateway 的实际成本取决于区域、运行时长和流量，具体节省金额以实际计费为准。
 - **静态资源分离**：将静态媒体资源存储在 S3，减少 Web 实例承担的静态资源存储需求。
 - **实例与存储选型**：实验环境优先采用满足测试需求的实例规格和存储配置，具体参数以实际部署记录为准。数据库实例使用 `db.t3.micro`，存储容量及实际费用以部署配置和 AWS 账单为准。
