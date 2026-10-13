@@ -80,10 +80,14 @@ graph TD
   - 实例标识符：`enterprise-db`（单可用区 `db.t3.micro`，MySQL 8.4）
   - 专用 DB 子网组：`enterprise-db-subnet-group`（严格绑定 2 个私有子网）
   - 开启 AWS KMS 静态数据加密，存储扩容限制为 20 GiB 以保障成本安全。
+  - **内网联调与持久化测试：**
+![RDS 跨子网内网查询验证](02-rds-mysql-connection.png)
 - **S3 对象存储与免密钥认证 (Zero-Hardcoded Credentials)**：
   - 创建私有存储桶 `enterprise-web-assets-202610` 并开启 Block Public Access。
   - 创建 IAM Role `enterprise-ec2-s3-role` 绑定至 EC2 实例。
   - 应用依托底层 AWS STS 临时安全凭证访问 S3，杜绝了 Access Key/Secret Key 硬编码泄露风险。
+  - **STS 临时凭证与 S3 免密交互：**
+![IAM Role STS 免密鉴权验证](03-iam-sts-s3-upload.png)
 
 ---
 
@@ -97,6 +101,8 @@ graph TD
   - 直连 EC2 提示 `Connection Timed Out`（安全组直接将公网非法握手包丢弃）。
   - RDS 连接探测返回 `TcpTestSucceeded : False`，私有隔离验证通过。
   - ALB 统一域名仍可秒级分发至 Node 2 与 Node 1。
+  - **测试证据：**
+![安全组阻断与合法代理对比](01-security-group-defense.png)
 
 ### 实验 2：节点故障注入与自动化自愈 (Fault Injection & Self-Healing)
 - **测试方法**：
@@ -107,6 +113,9 @@ graph TD
   2. **终端访问表现**：客户端持续请求网站，流量 100% 自动平滑路由至健康的 Node 2（`ap-northeast-1a`），业务达成 **零中断（Zero Downtime）**。
   3. **CloudWatch 告警触发**：指标 `UnHealthyHostCount` 触碰阈值（蓝线跃升至 1），告警状态由 `OK` 翻转为 `In alarm`。
   4. **SNS 自动化通知**：联动 Amazon SNS 在 60 秒内向架构师/运维邮箱自动投递故障警报邮件。
+  5. **故障感知与监控指标触发：**
+![目标组健康检查失效剔除节点](04-target-group-unhealthy.png)
+![CloudWatch 监控指标越限报警](05-cloudwatch-alarm-triggered.png)
 
 ---
 
