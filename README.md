@@ -10,7 +10,6 @@ AWS Enterprise Web Application Cloud Migration & High-Availability Architecture
 ![Security](https://img.shields.io/badge/Security-Least--Privilege-red)
 ![IAM](https://img.shields.io/badge/IAM-Role--Based-brightgreen)
 
-
 ## 一、 项目背景与业务痛点 (Business Context)
 
 本项目模拟一家中小型电商企业的核心系统上云改造演练。原系统运行于传统 IDC 单台裸金属物理服务器，随着线上访问量增长，面临以下架构瓶颈：
@@ -19,7 +18,7 @@ AWS Enterprise Web Application Cloud Migration & High-Availability Architecture
 3. **安全边界扁平**：核心数据库与 Web 应用共用公网出入口，缺乏网络层与传输层的隔离防护。
 4. **监控与告警滞后**：依赖人工巡检，缺乏端到端指标联动与秒级自动化故障感知机制。
 
-本项目参考 AWS Well-Architected Framework 中的可靠性、安全性与卓越运维等设计原则，实践搭建了跨可用区的 Web 计算层、负载均衡、网络访问控制、动静资源分离和故障告警机制，并对架构的可用性、成本与安全性进行分析。
+本项目参考 AWS Well-Architected Framework 中的可靠性、安全性与卓越运维等设计原则，实践搭建了跨可用区的 Web 计算层、负载均衡、网络访问控制、S3 对象存储访问和故障告警机制，并对架构的可用性、成本与安全性进行分析。
 
 ---
 
@@ -65,15 +64,16 @@ graph TD
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **enterprise-alb-sg** | ALB 负载均衡器 | Inbound | TCP 80 | `0.0.0.0/0` | 系统面向互联网的唯一统一合法接入网关。 |
 | **enterprise-web-sg** | EC2 Web 集群 | Inbound | TCP 80 | **`enterprise-alb-sg` (SG ID)** |通过引用 ALB 安全组限制 HTTP 入站来源，避免客户端绕过负载均衡器直接访问 Web 服务端口 |
-| | | Inbound | TCP 22 | `3.112.23.0/29` (Tokyo EC2 Connect) | 仅允许 AWS 官方管控网段连接，杜绝全网 SSH 暴力破解。 |
+| | | Inbound | TCP 22 | 3.112.23.0/29 (EC2 Instance Connect 服务来源网段，ap-northeast-1) | 允许 EC2 Instance Connect 服务通过 SSH 连接实例。该规则用于限制管理访问来源，降低直接向公网开放 SSH 的风险；实际使用时应核对 AWS 当前的服务前缀列表。 |
 | **enterprise-rds-sg** | RDS MySQL 实例 | Inbound | TCP 3306 | **`enterprise-web-sg` (SG ID)** | 仅允许关联 Web 安全组的应用实例通过必要的 MySQL 端口访问数据库。 |
-| | | Inbound | All | 拒绝所有公网访问 (`Publicly Accessible: NO`) | 通过私有子网和安全组限制数据库的公网可达性及网络访问范围。 |
+| | | Inbound | All |  | 通过私有子网和安全组限制数据库的公网可达性及网络访问范围。 |
+**数据库网络隔离说明：** RDS 配置为不可公开访问，并部署在私有子网中；安全组仅允许来自 Web 安全组的必要 MySQL 流量。该设计限制了数据库的网络访问范围，但不代表数据库具备 Multi-AZ 高可用能力。
 
 ---
 
 ## 四、 核心架构技术实现 (Technical Implementation)
 
-### 1. 计算层无状态化与元数据自愈 (Stateless Compute)
+### 1. 计算层初始化与实例元数据 (Compute Initialization & Metadata)
 - 实例均通过编写预置的 Cloud-init **User Data** 脚本进行引导部署，避免手工登入配置。
 - 在引导阶段集成 **IMDSv2 (Instance Metadata Service v2)**，动态探测机器私有 IP 与可用区信息生成专属响应页，为后续构建 Auto Scaling Group（ASG）奠定无状态计算标准。
 
@@ -81,7 +81,7 @@ graph TD
 - **RDS for MySQL 部署（成本优先型设计）**：
   - 实例标识符：`enterprise-db`（MySQL 8.4，实例规格 `db.t3.micro`）
   - 架构模式：**单可用区部署（Single-AZ）**。在当前的阶段性验证中，此设计优先满足成本安全；核心生产建议开启 Multi-AZ 同步备机。
-  - 专用 DB 子网组：`enterprise-db-subnet-group`（划分于 2 个独立私有子网，具备后续无缝升级 Multi-AZ 的底层网络条件）。
+  - 专用 DB 子网组：`enterprise-db-subnet-group`（专用 DB 子网组：`enterprise-db-subnet-group`，覆盖两个可用区，为后续调整为 Multi-AZ 部署提供子网基础。）。
   - 安全隔离：开启 KMS 静态加密，彻底关闭公网访问权限（`Publicly Accessible: NO`）。
   - **内网联调与持久化测试：**
 ![RDS 跨子网内网查询验证](02-rds-mysql-connection.png)
@@ -108,54 +108,62 @@ graph TD
 ![安全组阻断与合法代理对比](01-security-group-defense.png)
 
 ### 实验 2：Web 节点故障注入与流量故障转移测试 (Fault-Injection & Traffic Failover)
+
 - **测试方法**：
-  登录位于 `ap-northeast-1c` 的 `enterprise-web-1`，主动停止 Nginx 进程以模拟应用层崩溃：
+
+  登录位于 `ap-northeast-1c` 的 `enterprise-web-1`，停止 Nginx 服务以模拟应用层故障：
+
   ```bash
   sudo systemctl stop nginx
-- **观测指标与自愈结果**：
-  1. **ALB 目标组判定**：连续健康检查失败，在 30 秒内将 Node 1 状态置为 `Unhealthy (Health checks failed)` 并停止分配新流量。
-  2. **终端访问表现**：在本次测试中，ALB 将被判定为不健康的目标摘除，并将后续请求转发至其他健康目标。该结果用于验证 Web 层的故障目标摘除与流量故障转移，不代表所有请求均无中断。
-  3. **CloudWatch 告警触发**：指标 `UnHealthyHostCount` 触碰阈值（蓝线跃升至 1），告警状态由 `OK` 翻转为 `In alarm`。
-  4. **SNS 自动化通知**：联动 Amazon SNS 在 60 秒内向架构师/运维邮箱自动投递故障警报邮件。
-  5. **故障感知与监控指标触发：**
-![目标组健康检查失效剔除节点](04-target-group-unhealthy.png)
-![CloudWatch 监控指标越限报警](05-cloudwatch-alarm-triggered.png)
+  ```
 
+- **观测指标与流量故障转移结果**：
+
+  - **ALB 目标组判定**：记录目标健康状态的变化及实际观察到的判定时间。
+  - **终端访问表现**：在本次测试中，ALB 将被判定为不健康的目标摘除，并将后续请求转发至其他健康目标。该结果用于验证 Web 层的故障目标摘除与流量故障转移，不代表所有请求均无中断。
+  - **CloudWatch 告警**：记录 `UnHealthyHostCount` 指标和告警状态的实际变化。
+  - **SNS 通知**：记录实际收到的告警邮件及对应时间；60s以内
+
+  **故障感知与监控指标触发：**
+
+  ![目标组健康检查失效剔除节点](04-target-group-unhealthy.png)
+
+  ![CloudWatch 监控指标越限报警](05-cloudwatch-alarm-triggered.png)
 ---
 ## 六、成本优化与资源治理（FinOps）
 
-### 6.1 成本控制
+### 1. 成本控制
 
-- **AWS Budgets 告警**：已配置预算告警，用 1美元作为成本监控阈值，并结合预测性告警及时发现潜在超支风险。告警用于提醒，不代表能够自动阻止所有费用产生。
+- **AWS Budgets 告警**：预算监控： 配置 AWS Budgets 预算告警，以 1 美元作为预算阈值，用于监控项目相关费用并在达到告警条件时接收通知。
 - **网络架构降本**：实验环境将 EC2 部署在公有子网，避免使用 NAT Gateway 产生的额外费用。NAT Gateway 的实际成本取决于区域、运行时长和流量，具体节省金额以实际计费为准。
 - **静态资源分离**：将静态媒体资源存储在 S3，减少 Web 实例承担的静态资源存储需求。
 - **实例与存储选型**：实验环境优先采用满足测试需求的实例规格和存储配置，具体参数以实际部署记录为准。数据库实例使用 `db.t3.micro`，存储容量及实际费用以部署配置和 AWS 账单为准。
 
-### 6.2 资源清理
+### 2. 资源清理
 
 实验结束后，按照资源依赖关系逐项检查并清理不再使用的 AWS 资源，避免因遗漏资源而产生持续费用。清理范围包括 EC2、ALB、RDS、EBS、S3 中不再需要的数据及其他已创建的相关资源。删除前应确认是否需要保留数据、日志和配置记录。
 
 ## 七、设计权衡与局限性
 
-### 7.1 数据库可用性与成本权衡
+### 1. 数据库可用性与成本权衡
 
 本项目使用 RDS Single-AZ 部署 MySQL，主要考虑到个人实验环境的成本限制。Web 层通过 ALB 和跨可用区部署的 EC2 实例提高服务可用性，但数据库层仍存在单点故障风险，因此当前架构尚未实现端到端的跨可用区高可用。
 
 后续可以根据业务的可用性要求和预算，将 RDS 调整为 Multi-AZ，并进一步验证数据库故障切换行为。
 
-### 7.2 EC2 网络部署与安全设计
+### 2. EC2 网络部署与安全设计
 
 将 EC2 部署在公有子网可以减少 NAT Gateway 带来的额外费用，但也需要关注公网访问风险。安全组应遵循最小权限原则：仅开放必要的业务端口，限制管理访问的来源，并通过安全组规则限制数据库的访问来源，使其仅接受应用层所需的流量。
 
 对于生产环境，可以进一步评估将 EC2 迁移至私有子网，并采用受控的管理通道，以减少实例直接暴露于公网的风险。
 
-### 7.3 故障检测与流量切换
+### 3. 故障检测与流量切换
 
 当 ALB 的健康检查判定某个目标实例不健康时，可以停止向该目标转发新请求，并将流量转发至其他健康目标。这属于故障目标摘除与流量故障转移，并不意味着 EC2 实例本身会自动恢复或被替换。
 
 若需要自动替换故障实例，可以进一步结合 Auto Scaling Group（ASG）实现，并补充相应的故障恢复测试。
 
-### 7.4 测试范围与后续改进
+### 4. 测试范围与后续改进
 
 项目的测试结论以实际执行并留存的测试记录为准。对于已经验证的功能，可以记录测试步骤、观察结果和相关截图；对于尚未验证的场景，应明确列为后续改进计划，避免将设计目标描述为已经实现的功能。
 
