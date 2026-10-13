@@ -83,7 +83,7 @@ graph TD
   - **内网联调与持久化测试：**
 ![RDS 跨子网内网查询验证](02-rds-mysql-connection.png)
 - **S3 对象存储与免密钥认证 (Zero-Hardcoded Credentials)**：
-  - 创建私有存储桶 `enterprise-web-assets-202610` 并开启 Block Public Access。
+  - 创建私有存储桶 `enterprise-web-assets` 并开启 Block Public Access。
   - 创建 IAM Role `enterprise-ec2-s3-role` 绑定至 EC2 实例。
   - 应用依托底层 AWS STS 临时安全凭证访问 S3，杜绝了 Access Key/Secret Key 硬编码泄露风险。
   - **STS 临时凭证与 S3 免密交互：**
