@@ -25,26 +25,26 @@ AWS Enterprise Web Application Cloud Migration &amp; High-Availability Solution 
 
 ```mermaid
 graph TD
-    Client([Internet 公网访客]) -->|HTTP : 80| ALB[Application Load Balancer]
+    Client(["Internet 公网访客"]) -->|HTTP: 80| ALB["Application Load Balancer"]
     
-    subgraph VPC [Amazon VPC: 10.0.0.0/16]
-        subgraph PublicSubnets [Public Subnets 跨可用区]
-            ALB -->|Round Robin| EC2_1[EC2 Node 1: 10.0.2.56 / ap-northeast-1c]
-            ALB -->|Round Robin| EC2_2[EC2 Node 2: 10.0.1.206 / ap-northeast-1a]
+    subgraph VPC ["Amazon VPC (10.0.0.0/16)"]
+        subgraph PublicSubnets ["Public Subnets (跨可用区)"]
+            ALB -->|Round Robin| EC2_1["EC2 Node 1: 10.0.2.56 (ap-northeast-1c)"]
+            ALB -->|Round Robin| EC2_2["EC2 Node 2: 10.0.1.206 (ap-northeast-1a)"]
         end
         
-        subgraph PrivateSubnets [Private Subnets 私有子网组]
-            EC2_1 -->|MySQL 3306| RDS[(RDS MySQL 8.4: enterprise-db)]
+        subgraph PrivateSubnets ["Private Subnets (私有子网组)"]
+            EC2_1 -->|MySQL 3306| RDS[("RDS MySQL 8.4: enterprise-db")]
             EC2_2 -->|MySQL 3306| RDS
         end
     end
 
-    EC2_1 -.->|IAM STS 临时凭证| S3[S3 存储桶: enterprise-web-assets]
+    EC2_1 -.->|IAM STS 临时凭证| S3["S3 存储桶: enterprise-web-assets"]
     EC2_2 -.->|IAM STS 临时凭证| S3
     
-    ALB -.->|UnHealthyHostCount >= 1| CW[CloudWatch Alarms] -->|Trigger| SNS[SNS 邮件通知]
-\```
----
+    ALB -.->|UnHealthyHostCount >= 1| CW["CloudWatch Alarms"] -->|Trigger| SNS["SNS 邮件通知"]
+
+```
 
 ## 三、 基础设施与配置参数规范 (Infrastructure Matrix)
 
