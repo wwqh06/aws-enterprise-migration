@@ -1,13 +1,15 @@
-# aws-enterprise-migration
-AWS Enterprise Web Application Cloud Migration &amp; High-Availability Solution (Multi-AZ, ALB, RDS, S3, IAM, CloudWatch)个人尝试
-# AWS 企业网站云上高可用架构迁移与容灾方案
-# AWS Enterprise Web Application Cloud Migration & High-Availability Solution
+# AWS 企业网站云迁移与高可用架构实践
+
+AWS Enterprise Web Application Cloud Migration & High-Availability Architecture
+
+本项目模拟中小型电商网站的云迁移场景，使用 AWS 搭建跨可用区的 Web 计算层，并结合 ALB、RDS、S3、IAM 和 CloudWatch 实践负载均衡、网络访问控制、数据存储与故障告警。数据库采用 Single-AZ 部署，以控制实验成本。
 
 ![AWS Region](https://img.shields.io/badge/Region-ap--northeast--1-orange?logo=amazon-aws)
 ![VPC](https://img.shields.io/badge/VPC-10.0.0.0%2F16-blue)
-![HA Architecture](https://img.shields.io/badge/Architecture-Multi--AZ-success)
-![Security](https://img.shields.io/badge/Security-Defense--in--Depth-red)
-![Zero-Credential](https://img.shields.io/badge/IAM-STS%20Role%20Based-brightgreen)
+![Web Tier](https://img.shields.io/badge/Web--Tier-Multi--AZ-success)
+![Security](https://img.shields.io/badge/Security-Least--Privilege-red)
+![IAM](https://img.shields.io/badge/IAM-Role--Based-brightgreen)
+
 
 ## 一、 项目背景与业务痛点 (Business Context)
 
@@ -17,7 +19,7 @@ AWS Enterprise Web Application Cloud Migration &amp; High-Availability Solution 
 3. **安全边界扁平**：核心数据库与 Web 应用共用公网出入口，缺乏网络层与传输层的隔离防护。
 4. **监控与告警滞后**：依赖人工巡检，缺乏端到端指标联动与秒级自动化故障感知机制。
 
-基于 **AWS 架构完善框架（Well-Architected Framework）** 的可靠性、安全性与卓越运维支柱，本项目主导落地了一套跨可用区（Multi-AZ）双活、纵深安全防御、动静解耦且具备自愈能力的企业级云架构解决方案。
+本项目参考 AWS Well-Architected Framework 中的可靠性、安全性与卓越运维等设计原则，实践搭建了跨可用区的 Web 计算层、负载均衡、网络访问控制、动静资源分离和故障告警机制，并对架构的可用性、成本与安全性进行分析。
 
 ---
 
@@ -39,7 +41,7 @@ graph TD
         end
     end
 
-    EC2_1 -.->|IAM STS 临时凭证| S3["S3 存储桶: enterprise-web-assets"]
+    EC2_1 -.->|IAM STS 临时凭证| S3["S3 存储桶: enterprise-web-assets-202610"]
     EC2_2 -.->|IAM STS 临时凭证| S3
     
     ALB -.->|UnHealthyHostCount >= 1| CW["CloudWatch Alarms"] -->|Trigger| SNS["SNS 邮件通知"]
@@ -62,10 +64,10 @@ graph TD
 | 安全组标识 | 关联对象 | 流量方向 | 协议/端口 | 来源/目标 (Source/Dest) | 设计意图与安全防护逻辑 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **enterprise-alb-sg** | ALB 负载均衡器 | Inbound | TCP 80 | `0.0.0.0/0` | 系统面向互联网的唯一统一合法接入网关。 |
-| **enterprise-web-sg** | EC2 Web 集群 | Inbound | TCP 80 | **`enterprise-alb-sg` (SG ID)** | **链式授权**：仅放行来自 ALB 的反向代理流量，直接阻断公网请求。 |
+| **enterprise-web-sg** | EC2 Web 集群 | Inbound | TCP 80 | **`enterprise-alb-sg` (SG ID)** |通过引用 ALB 安全组限制 HTTP 入站来源，避免客户端绕过负载均衡器直接访问 Web 服务端口 |
 | | | Inbound | TCP 22 | `3.112.23.0/29` (Tokyo EC2 Connect) | 仅允许 AWS 官方管控网段连接，杜绝全网 SSH 暴力破解。 |
-| **enterprise-rds-sg** | RDS MySQL 实例 | Inbound | TCP 3306 | **`enterprise-web-sg` (SG ID)** | **数据层白名单**：仅允许挂载了 Web 安全组的计算节点发起 SQL 查询。 |
-| | | Inbound | All | 拒绝所有公网访问 (`Publicly Accessible: NO`) | 物理隔离核心数据资产。 |
+| **enterprise-rds-sg** | RDS MySQL 实例 | Inbound | TCP 3306 | **`enterprise-web-sg` (SG ID)** | 仅允许关联 Web 安全组的应用实例通过必要的 MySQL 端口访问数据库。 |
+| | | Inbound | All | 拒绝所有公网访问 (`Publicly Accessible: NO`) | 通过私有子网和安全组限制数据库的公网可达性及网络访问范围。 |
 
 ---
 
@@ -112,7 +114,7 @@ graph TD
   sudo systemctl stop nginx
 - **观测指标与自愈结果**：
   1. **ALB 目标组判定**：连续健康检查失败，在 30 秒内将 Node 1 状态置为 `Unhealthy (Health checks failed)` 并停止分配新流量。
-  2. **终端访问表现**：客户端持续请求网站，流量 100% 自动平滑路由至健康的 Node 2（`ap-northeast-1a`），业务达成 **零中断（Zero Downtime）**。
+  2. **终端访问表现**：在本次测试中，ALB 将被判定为不健康的目标摘除，并将后续请求转发至其他健康目标。该结果用于验证 Web 层的故障目标摘除与流量故障转移，不代表所有请求均无中断。
   3. **CloudWatch 告警触发**：指标 `UnHealthyHostCount` 触碰阈值（蓝线跃升至 1），告警状态由 `OK` 翻转为 `In alarm`。
   4. **SNS 自动化通知**：联动 Amazon SNS 在 60 秒内向架构师/运维邮箱自动投递故障警报邮件。
   5. **故障感知与监控指标触发：**
@@ -124,10 +126,10 @@ graph TD
 
 ### 6.1 成本控制
 
-- **AWS Budgets 告警**：配置预算告警，计划使用 $1 和 $3 作为成本监控阈值，并结合预测性告警及时发现潜在超支风险。告警用于提醒，不代表能够自动阻止所有费用产生。
+- **AWS Budgets 告警**：已配置预算告警，用 1美元作为成本监控阈值，并结合预测性告警及时发现潜在超支风险。告警用于提醒，不代表能够自动阻止所有费用产生。
 - **网络架构降本**：实验环境将 EC2 部署在公有子网，避免使用 NAT Gateway 产生的额外费用。NAT Gateway 的实际成本取决于区域、运行时长和流量，具体节省金额以实际计费为准。
 - **静态资源分离**：将静态媒体资源存储在 S3，减少 Web 实例承担的静态资源存储需求。
-- **实例与存储选型**：实验环境优先考虑成本较低的实例和存储配置，例如 `t2.micro`、`db.t3.micro` 和 20 GiB 数据库存储。具体费用及免费额度适用情况需以 AWS 当前政策和实际账户资格为准。
+- **实例与存储选型**：实验环境优先采用满足测试需求的实例规格和存储配置，具体参数以实际部署记录为准。数据库实例使用 `db.t3.micro`，存储容量及实际费用以部署配置和 AWS 账单为准。
 
 ### 6.2 资源清理
 
