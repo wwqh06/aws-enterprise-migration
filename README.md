@@ -10,7 +10,7 @@ AWS Enterprise Web Application Cloud Migration & High-Availability Architecture
 ![Security](https://img.shields.io/badge/Security-Least--Privilege-red)
 ![IAM](https://img.shields.io/badge/IAM-Role--Based-brightgreen)
 
-## 一、 项目背景与业务痛点 (Business Context)
+## 一、 项目背景与业务痛点
 
 本项目模拟一家中小型电商企业的核心系统上云改造演练。原系统运行于传统 IDC 单台裸金属物理服务器，随着线上访问量增长，面临以下架构瓶颈：
 1. **单点故障（SPOF）**：Web 容器（Nginx）与数据库单机混部，缺乏高可用冗余，单点宕机即导致全站瘫痪。
@@ -21,7 +21,7 @@ AWS Enterprise Web Application Cloud Migration & High-Availability Architecture
 本项目使用 AWS 搭建了一个简单的网站架构，主要实践了跨可用区部署 EC2、使用 ALB 分发请求、通过安全组限制访问，以及利用 IAM Role 访问 S3。最后通过停止 Nginx 服务，观察 ALB 的健康检查和流量切换情况。
 ---
 
-## 二、 架构拓扑设计 (Architecture Topology)
+## 二、 架构拓扑设计
 
 ```mermaid
 graph TD
@@ -46,9 +46,9 @@ graph TD
 
 ```
 
-## 三、 基础设施与配置参数规范 (Infrastructure Matrix)
+## 三、 基础设施与配置参数规范
 
-### 1. 网络与子网拓扑 (Network Topology)
+### 1. 网络与子网拓扑
 - **VPC**：`enterprise-web-vpc`（CIDR: `10.0.0.0/16`，启用 DNS 主机名与 DNS 解析）
 - **公有子网（前端接入层）**：
   - `enterprise-public-sub-1`：`10.0.1.0/24` | 位于可用区 `ap-northeast-1a`（绑定 IGW 路由）
@@ -57,7 +57,7 @@ graph TD
   - `enterprise-private-sub-1`：`10.0.11.0/24` | 位于可用区 `ap-northeast-1a`（无公网路由）
   - `enterprise-private-sub-2`：`10.0.12.0/24` | 位于可用区 `ap-northeast-1c`（无公网路由）
 
-### 2. 纵深防御网络安全组矩阵 (Security Group Chaining)
+### 2. 纵深防御网络安全组矩阵
 
 | 安全组标识 | 关联对象 | 流量方向 | 协议/端口 | 来源/目标 (Source/Dest) | 设计意图与安全防护逻辑 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -69,13 +69,13 @@ graph TD
 
 ---
 
-## 四、 核心架构技术实现 (Technical Implementation)
+## 四、 核心架构技术实现
 
-### 1. 计算层初始化与实例元数据 (Compute Initialization & Metadata)
+### 1. 计算层初始化与实例元数据
 - 实例均通过编写预置的 Cloud-init **User Data** 脚本进行引导部署，避免手工登入配置。
 - 在引导阶段集成 **IMDSv2 (Instance Metadata Service v2)**，动态探测机器私有 IP 与可用区信息生成专属响应页，为后续引入 ASG 提供基础。
 
-### 2. 托管数据层与动静分离 (Data Tier & Storage)
+### 2. 托管数据层与动静分离
 - **RDS for MySQL 部署（成本优先型设计）**：
   - 实例标识符：`enterprise-db`（MySQL 8.4，实例规格 `db.t3.micro`）
   - 架构模式：**单可用区部署（Single-AZ）**。在当前的阶段性验证中，此设计优先满足成本安全；核心生产建议开启 Multi-AZ 同步备机。
@@ -92,9 +92,9 @@ graph TD
 
 ---
 
-## 五、 故障注入与负载均衡验证（Fault Injection & Load Balancing）
+## 五、 故障注入与负载均衡验证
 
-### 实验 1：公网攻击面收敛验证 (Perimeter Security Verification)
+### 实验 1：公网攻击面收敛验证
 - **测试方法**：
   在外部网络环境下，绕过负载均衡器，直接向 Web 节点公网 IP 发送 HTTP 请求，以及使用 PowerShell 向 RDS Endpoint 探测端口：
   `Test-NetConnection enterprise-db.cnuy08kw8rdo.ap-northeast-1.rds.amazonaws.com -Port 3306`
@@ -105,7 +105,7 @@ graph TD
   - **测试证据：**
 ![安全组阻断与合法代理对比](01-security-group-defense.png)
 
-### 实验 2：Web 节点故障注入与流量故障转移测试 (Fault-Injection & Traffic Failover)
+### 实验 2：Web 节点故障注入与流量故障转移测试
 
 - **测试方法**：
 
@@ -128,7 +128,7 @@ graph TD
 
   ![CloudWatch 监控指标越限报警](05-cloudwatch-alarm-triggered.png)
 ---
-## 六、成本优化与资源治理（FinOps）
+## 六、成本优化与资源治理
 
 ### 1. 成本控制
 
