@@ -75,16 +75,17 @@ graph TD
 - 实例均通过编写预置的 Cloud-init **User Data** 脚本进行引导部署，避免手工登入配置。
 - 在引导阶段集成 **IMDSv2 (Instance Metadata Service v2)**，动态探测机器私有 IP 与可用区信息生成专属响应页，为后续构建 Auto Scaling Group（ASG）奠定无状态计算标准。
 
-### 2. 托管数据层与动静分离 (Data Tier Decoupling)
-- **RDS for MySQL 部署**：
-  - 实例标识符：`enterprise-db`（单可用区 `db.t3.micro`，MySQL 8.4）
-  - 专用 DB 子网组：`enterprise-db-subnet-group`（严格绑定 2 个私有子网）
-  - 开启 AWS KMS 静态数据加密，存储扩容限制为 20 GiB 以保障成本安全。
+### 2. 托管数据层与动静分离 (Data Tier & Storage)
+- **RDS for MySQL 部署（成本优先型设计）**：
+  - 实例标识符：`enterprise-db`（MySQL 8.4，实例规格 `db.t3.micro`）
+  - 架构模式：**单可用区部署（Single-AZ）**。在当前的阶段性验证中，此设计优先满足成本安全；核心生产建议开启 Multi-AZ 同步备机。
+  - 专用 DB 子网组：`enterprise-db-subnet-group`（划分于 2 个独立私有子网，具备后续无缝升级 Multi-AZ 的底层网络条件）。
+  - 安全隔离：开启 KMS 静态加密，彻底关闭公网访问权限（`Publicly Accessible: NO`）。
   - **内网联调与持久化测试：**
 ![RDS 跨子网内网查询验证](02-rds-mysql-connection.png)
 - **S3 对象存储与免密钥认证 (Zero-Hardcoded Credentials)**：
-  - 创建私有存储桶 `enterprise-web-assets` 并开启 Block Public Access。
-  - 创建 IAM Role `enterprise-ec2-s3-role` 绑定至 EC2 实例。
+  - 创建私有存储桶 `enterprise-web-assets-202610`，开启 Block Public Access。
+  - 创建 IAM Role `enterprise-ec2-s3-role` 绑定至 EC2 实例配置文件（Instance Profile）。
   - 应用依托底层 AWS STS 临时安全凭证访问 S3，杜绝了 Access Key/Secret Key 硬编码泄露风险。
   - **STS 临时凭证与 S3 免密交互：**
 ![IAM Role STS 免密鉴权验证](03-iam-sts-s3-upload.png)
@@ -104,10 +105,11 @@ graph TD
   - **测试证据：**
 ![安全组阻断与合法代理对比](01-security-group-defense.png)
 
-### 实验 2：节点故障注入与自动化自愈 (Fault Injection & Self-Healing)
+### 实验 2：Web 节点故障注入与流量故障转移测试 (Fault-Injection & Traffic Failover)
 - **测试方法**：
-  登录 `enterprise-web-1`（`ap-northeast-1c`），主动执行命令关停 Web 服务：
-  `sudo systemctl stop nginx`
+  登录位于 `ap-northeast-1c` 的 `enterprise-web-1`，主动停止 Nginx 进程以模拟应用层崩溃：
+  ```bash
+  sudo systemctl stop nginx
 - **观测指标与自愈结果**：
   1. **ALB 目标组判定**：连续健康检查失败，在 30 秒内将 Node 1 状态置为 `Unhealthy (Health checks failed)` 并停止分配新流量。
   2. **终端访问表现**：客户端持续请求网站，流量 100% 自动平滑路由至健康的 Node 2（`ap-northeast-1a`），业务达成 **零中断（Zero Downtime）**。
@@ -118,12 +120,46 @@ graph TD
 ![CloudWatch 监控指标越限报警](05-cloudwatch-alarm-triggered.png)
 
 ---
+## 六、成本优化与资源治理（FinOps）
 
-## 六、 成本优化与资源治理 (FinOps Strategy)
+### 6.1 成本控制
 
-1. **零账单防线 (AWS Budgets Guardrail)**：首发配置 $1/$3 零支出告警与预测性警报，防止静默扣费。
-2. **架构级降本选型**：
-   - 第一阶段采用安全组链式授权代替 NAT Gateway，为企业节约约 $32/月的固定网络开销。
-   - 静态媒体资源剥离至 S3 存储，降低了 Web 实例挂载高性能 EBS 的容量需求与开销。
-   - 严格在 AWS Free Tier 额度内选型（EC2 `t2.micro`、RDS `db.t3.micro` 20GB）。
-3. **安全清理 Runbook**：制定明确的资源反向下线方案，保障实验与测试完成后的安全销毁闭环。
+- **AWS Budgets 告警**：配置预算告警，计划使用 $1 和 $3 作为成本监控阈值，并结合预测性告警及时发现潜在超支风险。告警用于提醒，不代表能够自动阻止所有费用产生。
+- **网络架构降本**：实验环境将 EC2 部署在公有子网，避免使用 NAT Gateway 产生的额外费用。NAT Gateway 的实际成本取决于区域、运行时长和流量，具体节省金额以实际计费为准。
+- **静态资源分离**：将静态媒体资源存储在 S3，减少 Web 实例承担的静态资源存储需求。
+- **实例与存储选型**：实验环境优先考虑成本较低的实例和存储配置，例如 `t2.micro`、`db.t3.micro` 和 20 GiB 数据库存储。具体费用及免费额度适用情况需以 AWS 当前政策和实际账户资格为准。
+
+### 6.2 资源清理
+
+实验结束后，按照资源依赖关系逐项检查并清理不再使用的 AWS 资源，避免因遗漏资源而产生持续费用。清理范围包括 EC2、ALB、RDS、EBS、S3 中不再需要的数据及其他已创建的相关资源。删除前应确认是否需要保留数据、日志和配置记录。
+
+## 七、设计权衡与局限性
+
+### 7.1 数据库可用性与成本权衡
+
+本项目使用 RDS Single-AZ 部署 MySQL，主要考虑到个人实验环境的成本限制。Web 层通过 ALB 和跨可用区部署的 EC2 实例提高服务可用性，但数据库层仍存在单点故障风险，因此当前架构尚未实现端到端的跨可用区高可用。
+
+后续可以根据业务的可用性要求和预算，将 RDS 调整为 Multi-AZ，并进一步验证数据库故障切换行为。
+
+### 7.2 EC2 网络部署与安全设计
+
+将 EC2 部署在公有子网可以减少 NAT Gateway 带来的额外费用，但也需要关注公网访问风险。安全组应遵循最小权限原则：仅开放必要的业务端口，限制管理访问的来源，并通过安全组规则限制数据库的访问来源，使其仅接受应用层所需的流量。
+
+对于生产环境，可以进一步评估将 EC2 迁移至私有子网，并采用受控的管理通道，以减少实例直接暴露于公网的风险。
+
+### 7.3 故障检测与流量切换
+
+当 ALB 的健康检查判定某个目标实例不健康时，可以停止向该目标转发新请求，并将流量转发至其他健康目标。这属于故障目标摘除与流量故障转移，并不意味着 EC2 实例本身会自动恢复或被替换。
+
+若需要自动替换故障实例，可以进一步结合 Auto Scaling Group（ASG）实现，并补充相应的故障恢复测试。
+
+### 7.4 测试范围与后续改进
+
+项目的测试结论以实际执行并留存的测试记录为准。对于已经验证的功能，可以记录测试步骤、观察结果和相关截图；对于尚未验证的场景，应明确列为后续改进计划，避免将设计目标描述为已经实现的功能。
+
+后续改进方向包括：
+
+- 将 RDS 升级为 Multi-AZ，验证数据库故障切换。
+- 评估 EC2 私有子网部署及受控管理访问方案。
+- 根据实际需求配置 ASG，实现故障实例的自动替换。
+- 持续检查预算告警、资源清理流程及实际费用。
